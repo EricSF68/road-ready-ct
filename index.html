@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Road Ready">
+<meta name="theme-color" content="#ffffff">
+<meta name="robots" content="noindex, nofollow">
+<title>Road Ready CT</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<style>
+:root{--ok:#1a7f37;--bad:#c62828;--line:#d0d0d0;--soft:#f4f4f4;--muted:#666}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:#fff;color:#000;font:17px/1.4 -apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif}
+body{min-height:100vh;min-height:100dvh;-webkit-user-select:none;user-select:none;touch-action:manipulation;
+  padding:calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 16px)}
+#app{max-width:560px;margin:0 auto}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.2px}
+.menu{background:none;border:0;font-size:15px;color:var(--muted);padding:6px 4px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px}
+.stat{border:1px solid var(--line);border-radius:10px;padding:6px 4px;text-align:center}
+.stat b{display:block;font-size:19px;font-variant-numeric:tabular-nums}
+.stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
+.bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden;margin-bottom:14px}
+.bar i{display:block;height:100%;background:#000;width:0;transition:width .3s}
+.tag{font-size:13px;color:var(--muted);margin-bottom:6px}
+.q{font-size:19px;font-weight:600;margin:0 0 14px}
+.opt{display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;background:#fff;color:#000;
+  border:1.5px solid var(--line);border-radius:12px;padding:12px;margin:0 0 10px;font:inherit;font-size:16px}
+.opt .l{flex:0 0 26px;height:26px;border-radius:13px;border:1.5px solid #000;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.opt:active{background:var(--soft)}
+.opt.right{border-color:var(--ok);background:#e9f6ec}
+.opt.right .l{background:var(--ok);border-color:var(--ok);color:#fff}
+.opt.wrong{border-color:var(--bad);background:#fdecec}
+.opt.wrong .l{background:var(--bad);border-color:var(--bad);color:#fff}
+.opt.dim{opacity:.55}
+.fb{border-radius:12px;padding:12px;margin:4px 0 12px;font-size:15px}
+.fb.ok{background:#e9f6ec}.fb.no{background:#fdecec}
+.fb strong{display:block;font-size:17px;margin-bottom:4px}
+.fb .why{color:#222}
+.btn{display:block;width:100%;background:#000;color:#fff;border:0;border-radius:12px;padding:15px;font:inherit;font-weight:700;font-size:17px;margin-top:6px}
+.btn.alt{background:#fff;color:#000;border:1.5px solid #000}
+.center{text-align:center;padding-top:30px}
+.big{font-size:56px;margin:10px 0}
+.small{font-size:14px;color:var(--muted)}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:flex-end;z-index:9}
+.sheet>div{background:#fff;width:100%;border-radius:16px 16px 0 0;padding:18px 16px calc(env(safe-area-inset-bottom) + 18px)}
+</style>
+</head>
+<body>
+<div id="app"><p class="center">Loading…</p></div>
+<script>
+(function(){
+"use strict";
+var KEY = "roadready.v1";
+var app = document.getElementById("app");
+var Q = [];          // questions [{id,q,options,answer,ref}]
+var S = null;        // state
+
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+function load(){ try{ return JSON.parse(localStorage.getItem(KEY)); }catch(e){ return null; } }
+function shuffle(a){ for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t;} return a; }
+function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
+
+function fresh(){
+  return { p:{}, cur:null, round:1, last:null };
+  // p[id] = {s: streak 0..2, a: times asked, w: times wrong}
+}
+function prog(id){ return S.p[id] || {s:0,a:0,w:0}; }
+function counts(){
+  var c={known:0,once:0,missed:0,unasked:0,total:Q.length};
+  Q.forEach(function(q){ var p=prog(q.id);
+    if(p.s>=2) c.known++; else if(p.s===1) c.once++; else if(p.a>0) c.missed++; else c.unasked++; });
+  return c;
+}
+function pool(){ return Q.filter(function(q){ return prog(q.id).s<2; }); }
+
+function pick(){
+  var av = pool();
+  if(!av.length){ S.cur=null; save(); return; }
+  if(av.length>1 && S.last) av = av.filter(function(q){ return q.id!==S.last; });
+  var q = av[Math.floor(Math.random()*av.length)];
+  S.cur = { id:q.id, order:shuffle([0,1,2,3]), chosen:null };
+  save();
+}
+
+function statsHTML(){
+  var c=counts();
+  return '<div class="stats">'+
+    '<div class="stat"><b>'+c.known+'</b><span>Known</span></div>'+
+    '<div class="stat"><b>'+c.once+'</b><span>Right 1×</span></div>'+
+    '<div class="stat"><b>'+c.missed+'</b><span>Missed</span></div>'+
+    '<div class="stat"><b>'+c.unasked+'</b><span>Not asked</span></div></div>'+
+    '<div class="bar"><i style="width:'+(c.total?100*c.known/c.total:0)+'%"></i></div>';
+}
+function head(){
+  return '<header><h1>Road Ready CT</h1><button class="menu" data-act="menu">Menu</button></header>';
+}
+
+function render(){
+  if(!S.cur && pool().length) pick();
+  if(!S.cur){ return renderDone(); }
+  var q = Q.find(function(x){return x.id===S.cur.id;});
+  if(!q){ S.cur=null; pick(); return render(); }
+  var ansIdx = "ABCD".indexOf(q.answer);
+  var chosen = S.cur.chosen;
+  var html = head()+statsHTML();
+  var p = prog(q.id);
+  html += '<div class="tag">'+(p.s===1?'Get this right once more to know it':(p.a>0?'You missed this one before':'New question'))+'</div>';
+  html += '<p class="q">'+esc(q.q)+'</p>';
+  S.cur.order.forEach(function(oi,pos){
+    var cls="opt";
+    if(chosen!==null){
+      if(oi===ansIdx) cls+=" right"; else if(oi===chosen) cls+=" wrong"; else cls+=" dim";
+    }
+    html += '<button class="'+cls+'" data-opt="'+oi+'"><span class="l">'+"ABCD"[pos]+'</span><span>'+esc(q.options[oi])+'</span></button>';
+  });
+  if(chosen!==null){
+    var ok = chosen===ansIdx;
+    var np = prog(q.id);
+    var msg = ok ? (np.s>=2?"Correct — you know this one!":"Correct! One more time to know it.") : "Not quite. The right answer is highlighted.";
+    html += '<div class="fb '+(ok?'ok':'no')+'"><strong>'+msg+'</strong><div class="why">'+esc(q.ref)+'</div></div>';
+    html += '<button class="btn" data-act="next">Next question</button>';
+  }
+  app.innerHTML = html;
+  if(chosen!==null){ var b=app.querySelector('[data-act=next]'); if(b) b.scrollIntoView({block:"nearest"}); }
+  else window.scrollTo(0,0);
+}
+
+function renderDone(){
+  var c=counts();
+  app.innerHTML = head()+statsHTML()+
+    '<div class="center"><div class="big">🎉</div><h2>Congratulations!</h2>'+
+    '<p>You know all '+c.total+' questions'+(S.round>1?' (round '+S.round+')':'')+'.<br>You are ready for the Connecticut knowledge test.</p>'+
+    '<p>Want to learn them all again?</p>'+
+    '<button class="btn" data-act="again">Yes, start over</button>'+
+    '<p class="small">Progress is saved on this phone.</p></div>';
+}
+
+function answer(oi){
+  if(!S.cur || S.cur.chosen!==null) return;
+  var q = Q.find(function(x){return x.id===S.cur.id;});
+  var ok = oi === "ABCD".indexOf(q.answer);
+  var p = prog(q.id);
+  p.a++; if(ok){ p.s=Math.min(2,p.s+1); } else { p.s=0; p.w++; }
+  S.p[q.id]=p; S.cur.chosen=oi; save(); render();
+}
+
+function menu(){
+  var d=document.createElement("div"); d.className="sheet";
+  var c=counts();
+  d.innerHTML='<div><p><b>'+c.known+' of '+c.total+'</b> questions known.</p>'+
+    '<button class="btn alt" data-act="close">Keep studying</button>'+
+    '<button class="btn alt" data-act="reset1" style="margin-top:10px">Start over from zero</button></div>';
+  document.body.appendChild(d);
+  d.addEventListener("click",function(e){
+    var t=e.target.closest("[data-act]");
+    if(e.target===d || (t&&t.dataset.act==="close")){ d.remove(); return; }
+    if(t&&t.dataset.act==="reset1"){ t.textContent="Tap again to erase all progress"; t.dataset.act="reset2"; t.style.borderColor="#c62828"; t.style.color="#c62828"; return; }
+    if(t&&t.dataset.act==="reset2"){ var r=S.round; S=fresh(); S.round=r; save(); d.remove(); render(); }
+  });
+}
+
+app.addEventListener("click",function(e){
+  var o=e.target.closest("[data-opt]"); if(o){ answer(+o.dataset.opt); return; }
+  var t=e.target.closest("[data-act]"); if(!t) return;
+  var a=t.dataset.act;
+  if(a==="next"){ S.last=S.cur&&S.cur.id; S.cur=null; pick(); render(); }
+  else if(a==="again"){ var r=(S.round||1)+1; S=fresh(); S.round=r; save(); render(); }
+  else if(a==="menu"){ menu(); }
+});
+
+function start(data){
+  Q = data.questions;
+  try{ localStorage.setItem(KEY+".q", JSON.stringify(data)); }catch(e){}
+  S = load() || fresh();
+  render();
+}
+
+// Questions: network/service-worker first, local copy as fallback.
+fetch("questions.json",{cache:"no-cache"}).then(function(r){ if(!r.ok) throw 0; return r.json(); })
+  .then(start)
+  .catch(function(){
+    var c=null; try{ c=JSON.parse(localStorage.getItem(KEY+".q")); }catch(e){}
+    if(c) start(c); else app.innerHTML='<p class="center">Could not load questions. Connect to the internet and open the app once.</p>';
+  });
+
+if("serviceWorker" in navigator){ navigator.serviceWorker.register("sw.js").catch(function(){}); }
+if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().catch(function(){}); }
+})();
+</script>
+</body>
+</html>
