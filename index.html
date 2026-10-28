@@ -279,7 +279,7 @@ function lockAnswers(left, need){
     if(rem<=0){
       clearInterval(lockTimer);
       var o=app.querySelectorAll(".opt.locked"); for(var j=0;j<o.length;j++){ o[j].classList.remove("locked"); o[j].disabled=false; }
-      var w=app.querySelector(".wait"); if(w) w.remove();
+      var w=app.querySelector(".wait"); if(w) w.style.visibility="hidden"; // keep its space so answers don't jump
     }
   },100);
 }
