@@ -1,0 +1,13 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">
+<title>Road Ready voices</title><style>body{font:17px -apple-system,Arial,sans-serif;margin:0;padding:16px;background:#fff;color:#000;max-width:560px;margin:auto}
+button{display:block;width:100%;text-align:left;font:inherit;padding:14px;margin:0 0 10px;border:1.5px solid #ccc;border-radius:12px;background:#fff;color:#000}
+button.on{border-color:#000;background:#f4f4f4}.small{color:#666;font-size:14px}</style></head><body>
+<h2>Pick a voice</h2><p class="small">Tap to listen. Tell Claude the name of the one you like.</p><div id="l">Loading…</div>
+<script>
+var a=new Audio(),cur=null;
+fetch("audio/samples/voices.json",{cache:"no-store"}).then(function(r){return r.json()}).then(function(vs){
+ document.getElementById("l").innerHTML=vs.map(function(v){return '<button data-v="'+v+'">'+v.replace("en-US-","").replace("Neural","").replace("Multilingual"," (multilingual)")+'</button>'}).join("");
+}).catch(function(){document.getElementById("l").textContent="No samples yet."});
+document.addEventListener("click",function(e){var b=e.target.closest("button");if(!b)return;
+ if(cur)cur.classList.remove("on");cur=b;b.classList.add("on");a.src="audio/samples/"+b.dataset.v+".mp3";a.play();});
+</script></body></html>
