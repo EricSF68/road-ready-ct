@@ -1,5 +1,5 @@
 // Road Ready CT service worker: cache everything on install, serve offline.
-var CACHE = "roadready-97317d2d08fcc9";
+var CACHE = "roadready-97317d2d2795cb";
 var FILES = ["./", "index.html", "questions.json", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", function (e) {

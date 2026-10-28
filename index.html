@@ -14,7 +14,7 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon-192.png">
 <style>
-:root{--ok:#1a7f37;--bad:#c62828;--line:#d0d0d0;--soft:#f4f4f4;--muted:#666}
+:root{--ok:#1a7f37;--bad:#c62828;--line:#d0d0d0;--soft:#f4f4f4;--muted:#666;--hl:#ffd23f}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:#fff;color:#000;font:17px/1.4 -apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif}
 body{min-height:100vh;min-height:100dvh;-webkit-user-select:none;user-select:none;touch-action:manipulation;
@@ -27,9 +27,13 @@ h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.2px}
 .stat{border:1px solid var(--line);border-radius:10px;padding:6px 4px;text-align:center}
 .stat b{display:block;font-size:19px;font-variant-numeric:tabular-nums}
 .stat span{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.3px}
-.bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden;margin-bottom:14px}
+.bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden;margin-bottom:12px}
 .bar i{display:block;height:100%;background:#000;width:0;transition:width .3s}
-.tag{font-size:13px;color:var(--muted);margin-bottom:6px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.tag{font-size:13px;color:var(--muted)}
+.say{flex:0 0 auto;display:flex;align-items:center;gap:6px;background:#fff;color:#000;border:1.5px solid #000;border-radius:20px;padding:6px 12px;font:inherit;font-size:15px;font-weight:600}
+.say svg{width:18px;height:18px}
+.say.on{background:#000;color:#fff}
 .q{font-size:19px;font-weight:600;margin:0 0 14px}
 .opt{display:flex;gap:10px;align-items:flex-start;width:100%;text-align:left;background:#fff;color:#000;
   border:1.5px solid var(--line);border-radius:12px;padding:12px;margin:0 0 10px;font:inherit;font-size:16px}
@@ -39,11 +43,16 @@ h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.2px}
 .opt.right .l{background:var(--ok);border-color:var(--ok);color:#fff}
 .opt.wrong{border-color:var(--bad);background:#fdecec}
 .opt.wrong .l{background:var(--bad);border-color:var(--bad);color:#fff}
-.opt.dim{opacity:.55}
-.fb{border-radius:12px;padding:12px;margin:4px 0 12px;font-size:15px}
+.opt.dim{opacity:.6}
+.w{border-radius:3px}
+.w.hl{background:var(--hl)}
+.fb{border-radius:12px;padding:12px;margin:4px 0 12px;font-size:15px;background:var(--soft)}
 .fb.ok{background:#e9f6ec}.fb.no{background:#fdecec}
-.fb strong{display:block;font-size:17px;margin-bottom:4px}
-.fb .why{color:#222}
+.fb .head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
+.fb strong{font-size:17px}
+.fb p{margin:6px 0}
+.fb .wr{display:flex;gap:8px;margin:6px 0}
+.fb .wr .l{flex:0 0 22px;height:22px;border-radius:11px;border:1.5px solid #999;color:#555;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px}
 .btn{display:block;width:100%;background:#000;color:#fff;border:0;border-radius:12px;padding:15px;font:inherit;font-weight:700;font-size:17px;margin-top:6px}
 .btn.alt{background:#fff;color:#000;border:1.5px solid #000}
 .center{text-align:center;padding-top:30px}
@@ -60,18 +69,14 @@ h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.2px}
 "use strict";
 var KEY = "roadready.v1";
 var app = document.getElementById("app");
-var Q = [];          // questions [{id,q,options,answer,ref}]
-var S = null;        // state
+var Q = [];          // questions [{id,q,options,answer,ref,why,wrong}]
+var S = null;        // state: {p:{id:{s,a,w}}, cur:{id,order,chosen}, round, last}
 
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
 function load(){ try{ return JSON.parse(localStorage.getItem(KEY)); }catch(e){ return null; } }
 function shuffle(a){ for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t;} return a; }
 function esc(s){ return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];}); }
-
-function fresh(){
-  return { p:{}, cur:null, round:1, last:null };
-  // p[id] = {s: streak 0..2, a: times asked, w: times wrong}
-}
+function fresh(){ return { p:{}, cur:null, round:1, last:null }; }
 function prog(id){ return S.p[id] || {s:0,a:0,w:0}; }
 function counts(){
   var c={known:0,once:0,missed:0,unasked:0,total:Q.length};
@@ -80,7 +85,6 @@ function counts(){
   return c;
 }
 function pool(){ return Q.filter(function(q){ return prog(q.id).s<2; }); }
-
 function pick(){
   var av = pool();
   if(!av.length){ S.cur=null; save(); return; }
@@ -90,6 +94,82 @@ function pick(){
   save();
 }
 
+/* ---------- Read-aloud with word highlighting (iOS built-in voices via Web Speech API) ---------- */
+var TTS = { on:false, timer:null, gotBoundary:false, words:[], btn:null };
+var synth = window.speechSynthesis || null;
+var voice = null;
+function pickVoice(){
+  if(!synth) return;
+  var vs = synth.getVoices().filter(function(v){ return /^en[-_]US/i.test(v.lang); });
+  if(!vs.length) vs = synth.getVoices().filter(function(v){ return /^en/i.test(v.lang); });
+  var pref = [/premium/i,/enhanced/i,/samantha/i,/ava/i,/allison/i,/susan/i];
+  for(var i=0;i<pref.length && !voice;i++){ voice = vs.find(function(v){ return pref[i].test(v.name); }) || null; }
+  if(!voice) voice = vs.find(function(v){ return v.default; }) || vs[0] || null;
+}
+if(synth){ pickVoice(); if(synth.addEventListener) synth.addEventListener("voiceschanged", function(){ voice=null; pickVoice(); }); }
+
+// Turn a displayed word into what the voice should say (display text stays unchanged).
+function spoken(w){
+  var core = w.replace(/^[("'“]+|[)"'”,.;:!?]+$/g,"");
+  var map = {"mph":"miles per hour","ft":"feet","p.":"page","pp.":"pages","vs":"versus","vs.":"versus","&":"and","DMV":"D M V","GDL":"G D L","HOV":"H O V","IID":"I I D","RR":"R R","EMS":"E M S","U-turn":"U turn","U-turns":"U turns"};
+  if(map[core]) return w.replace(core, map[core]);
+  if(/^p\.\d/.test(core)) return w.replace(/^p\./,"page ");
+  return w.replace(/(\d+)%/g,"$1 percent").replace(/^\.(\d)/,"point $1").replace(/(\d)\/(\d)/g,"$1 $2").replace(/\//g," ").replace(/–|—/g," to ");
+}
+// Wrap text into word spans; returns html and registers words for one utterance segment.
+function wordsHTML(text, seg){
+  return String(text).split(/(\s+)/).map(function(t){
+    if(!t.trim()) return t;
+    return '<span class="w" data-seg="'+seg+'">'+esc(t)+'</span>';
+  }).join("");
+}
+function clearHL(){ var o=app.querySelectorAll(".w.hl"); for(var i=0;i<o.length;i++) o[i].classList.remove("hl"); }
+function stopTTS(){
+  TTS.on=false; clearTimeout(TTS.timer);
+  if(synth){ try{ synth.cancel(); }catch(e){} }
+  clearHL(); if(TTS.btn){ TTS.btn.classList.remove("on"); TTS.btn.querySelector("b").textContent="Read aloud"; }
+}
+// segs: [{prefix:"spoken intro", seg:id}] ; words come from DOM spans with data-seg
+function speakSegs(segs, btn){
+  if(!synth){ btn.querySelector("b").textContent="Speech not available"; return; }
+  stopTTS(); TTS.on=true; TTS.btn=btn; btn.classList.add("on"); btn.querySelector("b").textContent="Stop";
+  var i=0;
+  function next(){
+    if(!TTS.on) return;
+    if(i>=segs.length){ stopTTS(); return; }
+    var sg=segs[i++], spans=[].slice.call(app.querySelectorAll('.w[data-seg="'+sg.seg+'"]'));
+    var text=sg.prefix||"", starts=[];
+    spans.forEach(function(s){ if(text) text+=" "; starts.push(text.length); text+=spoken(s.textContent); });
+    var u=new SpeechSynthesisUtterance(text);
+    if(voice){ u.voice=voice; u.lang=voice.lang; } else u.lang="en-US";
+    u.rate=0.95;
+    var hlAt=function(ci){
+      var k=-1; for(var j=0;j<starts.length;j++){ if(starts[j]<=ci) k=j; else break; }
+      clearHL(); if(k>=0 && spans[k]) spans[k].classList.add("hl");
+    };
+    TTS.gotBoundary=false;
+    u.onboundary=function(e){ if(!TTS.on) return; if(e.name && e.name!=="word") return; TTS.gotBoundary=true; clearTimeout(TTS.timer); hlAt(e.charIndex); };
+    u.onstart=function(){
+      if(!TTS.on) return;
+      // Fallback if this device sends no word events: estimate timing from word lengths.
+      var t0=Date.now(), cps=13.5*u.rate;
+      (function tick(){
+        if(!TTS.on || TTS.gotBoundary) return;
+        hlAt(Math.floor((Date.now()-t0)/1000*cps));
+        TTS.timer=setTimeout(tick,90);
+      })();
+    };
+    u.onend=function(){ clearTimeout(TTS.timer); clearHL(); setTimeout(next,120); };
+    u.onerror=function(){ clearTimeout(TTS.timer); clearHL(); if(TTS.on) setTimeout(next,120); };
+    synth.speak(u);
+  }
+  // iOS sometimes drops a speak() issued right after cancel(); give it a moment.
+  setTimeout(next, 60);
+}
+var SPK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
+function sayBtn(act){ return '<button class="say" data-act="'+act+'">'+SPK+'<b>Read aloud</b></button>'; }
+
+/* ---------- Screens ---------- */
 function statsHTML(){
   var c=counts();
   return '<div class="stats">'+
@@ -99,38 +179,54 @@ function statsHTML(){
     '<div class="stat"><b>'+c.unasked+'</b><span>Not asked</span></div></div>'+
     '<div class="bar"><i style="width:'+(c.total?100*c.known/c.total:0)+'%"></i></div>';
 }
-function head(){
-  return '<header><h1>Road Ready CT</h1><button class="menu" data-act="menu">Menu</button></header>';
-}
+function head(){ return '<header><h1>Road Ready CT</h1><button class="menu" data-act="menu">Menu</button></header>'; }
+function curQ(){ return Q.find(function(x){return x.id===S.cur.id;}); }
 
 function render(){
+  stopTTS();
   if(!S.cur && pool().length) pick();
   if(!S.cur){ return renderDone(); }
-  var q = Q.find(function(x){return x.id===S.cur.id;});
+  var q = curQ();
   if(!q){ S.cur=null; pick(); return render(); }
-  var ansIdx = "ABCD".indexOf(q.answer);
-  var chosen = S.cur.chosen;
+  var ansIdx = "ABCD".indexOf(q.answer), chosen = S.cur.chosen, p = prog(q.id);
   var html = head()+statsHTML();
-  var p = prog(q.id);
-  html += '<div class="tag">'+(p.s===1?'Get this right once more to know it':(p.a>0?'You missed this one before':'New question'))+'</div>';
-  html += '<p class="q">'+esc(q.q)+'</p>';
+  var tag = chosen!==null ? '' : (p.s===1?'Get this right once more to know it':(p.a>0?'You missed this one before':'New question'));
+  html += '<div class="row"><div class="tag">'+tag+'</div>'+(chosen===null?sayBtn("readq"):'')+'</div>';
+  html += '<p class="q">'+wordsHTML(q.q,"q")+'</p>';
   S.cur.order.forEach(function(oi,pos){
     var cls="opt";
-    if(chosen!==null){
-      if(oi===ansIdx) cls+=" right"; else if(oi===chosen) cls+=" wrong"; else cls+=" dim";
-    }
-    html += '<button class="'+cls+'" data-opt="'+oi+'"><span class="l">'+"ABCD"[pos]+'</span><span>'+esc(q.options[oi])+'</span></button>';
+    if(chosen!==null){ if(oi===ansIdx) cls+=" right"; else if(oi===chosen) cls+=" wrong"; else cls+=" dim"; }
+    html += '<button class="'+cls+'" data-opt="'+oi+'"><span class="l">'+"ABCD"[pos]+'</span><span>'+wordsHTML(q.options[oi],"o"+pos)+'</span></button>';
   });
   if(chosen!==null){
-    var ok = chosen===ansIdx;
-    var np = prog(q.id);
-    var msg = ok ? (np.s>=2?"Correct — you know this one!":"Correct! One more time to know it.") : "Not quite. The right answer is highlighted.";
-    html += '<div class="fb '+(ok?'ok':'no')+'"><strong>'+msg+'</strong><div class="why">'+esc(q.ref)+'</div></div>';
-    html += '<button class="btn" data-act="next">Next question</button>';
+    var ok = chosen===ansIdx, np = prog(q.id);
+    var msg = ok ? (np.s>=2?"Correct! You know this one now.":"Correct! Get it right once more to know it.") : "Not quite. The right answer is in green.";
+    var correctPos = S.cur.order.indexOf(ansIdx);
+    html += '<div class="fb '+(ok?'ok':'no')+'"><div class="head"><strong>'+msg+'</strong>'+sayBtn("reade")+'</div>';
+    html += '<p><b>Why '+"ABCD"[correctPos]+' is right:</b> '+wordsHTML(q.why||q.ref,"why")+'</p>';
+    if(q.wrong){
+      S.cur.order.forEach(function(oi,pos){
+        if(oi===ansIdx || !q.wrong[oi]) return;
+        html += '<div class="wr"><span class="l">'+"ABCD"[pos]+'</span><span>'+wordsHTML(q.wrong[oi],"x"+pos)+'</span></div>';
+      });
+    }
+    html += '</div><button class="btn" data-act="next">Next question</button>';
   }
   app.innerHTML = html;
-  if(chosen!==null){ var b=app.querySelector('[data-act=next]'); if(b) b.scrollIntoView({block:"nearest"}); }
+  if(chosen!==null){ var f=app.querySelector('.fb'); if(f) f.scrollIntoView({block:"start",behavior:"instant"}); }
   else window.scrollTo(0,0);
+}
+
+function readQuestion(btn){
+  var segs=[{seg:"q"}];
+  for(var pos=0;pos<4;pos++) segs.push({seg:"o"+pos, prefix:"Answer "+"ABCD"[pos]+"."});
+  speakSegs(segs, btn);
+}
+function readExplanation(btn){
+  var q=curQ(), ansIdx="ABCD".indexOf(q.answer), cp=S.cur.order.indexOf(ansIdx);
+  var segs=[{seg:"why", prefix:"The right answer is "+"ABCD"[cp]+"."}];
+  S.cur.order.forEach(function(oi,pos){ if(oi!==ansIdx && q.wrong && q.wrong[oi]) segs.push({seg:"x"+pos, prefix:"Answer "+"ABCD"[pos]+" is wrong."}); });
+  speakSegs(segs, btn);
 }
 
 function renderDone(){
@@ -145,14 +241,13 @@ function renderDone(){
 
 function answer(oi){
   if(!S.cur || S.cur.chosen!==null) return;
-  var q = Q.find(function(x){return x.id===S.cur.id;});
-  var ok = oi === "ABCD".indexOf(q.answer);
-  var p = prog(q.id);
+  var q = curQ(), ok = oi === "ABCD".indexOf(q.answer), p = prog(q.id);
   p.a++; if(ok){ p.s=Math.min(2,p.s+1); } else { p.s=0; p.w++; }
   S.p[q.id]=p; S.cur.chosen=oi; save(); render();
 }
 
 function menu(){
+  stopTTS();
   var d=document.createElement("div"); d.className="sheet";
   var c=counts();
   d.innerHTML='<div><p><b>'+c.known+' of '+c.total+'</b> questions known.</p>'+
@@ -168,13 +263,15 @@ function menu(){
 }
 
 app.addEventListener("click",function(e){
-  var o=e.target.closest("[data-opt]"); if(o){ answer(+o.dataset.opt); return; }
+  var o=e.target.closest("[data-opt]"); if(o){ stopTTS(); answer(+o.dataset.opt); return; }
   var t=e.target.closest("[data-act]"); if(!t) return;
   var a=t.dataset.act;
-  if(a==="next"){ S.last=S.cur&&S.cur.id; S.cur=null; pick(); render(); }
+  if(a==="readq"||a==="reade"){ if(TTS.on){ stopTTS(); return; } if(a==="readq") readQuestion(t); else readExplanation(t); }
+  else if(a==="next"){ S.last=S.cur&&S.cur.id; S.cur=null; pick(); render(); }
   else if(a==="again"){ var r=(S.round||1)+1; S=fresh(); S.round=r; save(); render(); }
   else if(a==="menu"){ menu(); }
 });
+document.addEventListener("visibilitychange",function(){ if(document.visibilityState==="hidden") stopTTS(); });
 
 function start(data){
   Q = data.questions;
@@ -182,17 +279,15 @@ function start(data){
   S = load() || fresh();
   render();
 }
-
-// Questions: network/service-worker first, local copy as fallback.
 fetch("questions.json",{cache:"no-cache"}).then(function(r){ if(!r.ok) throw 0; return r.json(); })
   .then(start)
   .catch(function(){
     var c=null; try{ c=JSON.parse(localStorage.getItem(KEY+".q")); }catch(e){}
     if(c) start(c); else app.innerHTML='<p class="center">Could not load questions. Connect to the internet and open the app once.</p>';
   });
-
 if("serviceWorker" in navigator){ navigator.serviceWorker.register("sw.js").catch(function(){}); }
 if(navigator.storage && navigator.storage.persist){ navigator.storage.persist().catch(function(){}); }
+window.__rr={speakSegs:speakSegs};
 })();
 </script>
 </body>
