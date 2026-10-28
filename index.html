@@ -179,16 +179,19 @@ function clipBlob(key){
 // Download every clip (resumable: clips already stored are skipped). onProgress(done,total)
 function downloadSara(onProgress){
   if(SARA.dl) return SARA.dl;
+  var prev=SARA.man;
   SARA.dl = fetch(SARA.base+"timings.json",{cache:"no-store"}).then(function(r){ if(!r.ok) throw new Error("not ready"); return r.json(); })
   .then(function(m){
     return caches.open(SARA.cache).then(function(c){
       var keys=Object.keys(m.clips), done=0, total=keys.length, idx=0, failed=0;
       function one(){
         if(idx>=keys.length) return Promise.resolve();
-        var k=keys[idx++], url=SARA.base+k+".mp3";
+        var k=keys[idx++], url=SARA.base+k+".mp3", h=m.clips[k].h;
+        var same = prev && prev.clips && prev.clips[k] && prev.clips[k].h===h;
         return c.match(url).then(function(hit){
-          if(hit) return;
-          return fetch(url).then(function(r){ if(!r.ok) throw 0; return c.put(url,r); }).catch(function(){ failed++; });
+          if(hit && same) return;
+          // re-fetch new or changed clips (cache-busted by content hash), store under the plain URL
+          return fetch(url+"?h="+h,{cache:"no-store"}).then(function(r){ if(!r.ok) throw 0; return c.put(url,r); }).catch(function(){ failed++; });
         }).then(function(){ done++; if(onProgress) onProgress(done,total); return one(); });
       }
       var workers=[]; for(var w=0;w<6;w++) workers.push(one());
@@ -200,6 +203,15 @@ function downloadSara(onProgress){
     });
   }).finally(function(){ SARA.dl=null; });
   return SARA.dl;
+}
+// When online, quietly fetch any clips that changed since the download (e.g. re-recorded or new questions).
+function refreshSara(){
+  if(!saraReady() || !navigator.onLine) return;
+  fetch(SARA.base+"timings.json",{cache:"no-store"}).then(function(r){ return r.ok?r.json():null; }).then(function(m){
+    if(!m) return;
+    var changed=Object.keys(m.clips).some(function(k){ var o=SARA.man.clips[k]; return !o || o.h!==m.clips[k].h; });
+    if(changed) downloadSara().catch(function(){});
+  }).catch(function(){});
 }
 function removeSara(){ SARA.man=null; return caches.delete(SARA.cache); }
 
@@ -216,7 +228,7 @@ function speakSegs(segs, btn){
   });
   var i=0;
   function live(){ return TTS.on && TTS.run===run; }
-  function after(st){ setTimeout(function(){ if(st.badge){ var b=app.querySelector(st.badge); if(b) b.classList.remove("hl"); } if(live()) next(); }, st.pause); }
+  function after(st, ms){ setTimeout(function(){ if(st.badge){ var b=app.querySelector(st.badge); if(b) b.classList.remove("hl"); } if(live()) next(); }, ms==null?st.pause:ms); }
   function next(){
     if(!live()) return;
     if(i>=steps.length){ stopTTS(); return; }
@@ -232,7 +244,7 @@ function speakSegs(segs, btn){
       var url=URL.createObjectURL(blob), spans=spansOf(st), t=c.t||[];
       clearHL();
       if(st.badge){ var b=app.querySelector(st.badge); if(b) b.classList.add("hl"); }
-      player.onended=function(){ URL.revokeObjectURL(url); cancelAnimationFrame(TTS.raf); clearHL(); after(st); };
+      player.onended=function(){ URL.revokeObjectURL(url); cancelAnimationFrame(TTS.raf); clearHL(); after(st, st.intro?60:120); };
       player.onerror=function(){ URL.revokeObjectURL(url); cancelAnimationFrame(TTS.raf); speakStep(st); };
       player.src=url; player.playbackRate=1;
       var p=player.play(); if(p&&p.catch) p.catch(function(){ speakStep(st); });
@@ -475,7 +487,7 @@ function start(data){
   try{ localStorage.setItem(KEY+".q", JSON.stringify(data)); }catch(e){}
   S = load() || fresh();
   render();
-  loadSaraManifest();
+  loadSaraManifest().then(refreshSara);
 }
 fetch("questions.json",{cache:"no-cache"}).then(function(r){ if(!r.ok) throw 0; return r.json(); })
   .then(start)
