@@ -31,7 +31,7 @@ h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.2px}
 .bar i{display:block;height:100%;background:#000;width:0;transition:width .3s}
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
 .tag{font-size:13px;color:var(--muted)}
-.say{flex:0 0 auto;display:flex;align-items:center;gap:6px;background:#fff;color:#000;border:1.5px solid #000;border-radius:20px;padding:6px 12px;font:inherit;font-size:15px;font-weight:600}
+.say{flex:0 0 auto;width:138px;justify-content:center;white-space:nowrap;display:flex;align-items:center;gap:6px;background:#fff;color:#000;border:1.5px solid #000;border-radius:20px;padding:6px 12px;font:inherit;font-size:15px;font-weight:600}
 .say svg{width:18px;height:18px}
 .say.on{background:#000;color:#fff}
 .q{font-size:19px;font-weight:600;margin:0 0 14px}
@@ -46,6 +46,11 @@ h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.2px}
 .opt.dim{opacity:.6}
 .w{border-radius:3px}
 .w.hl{background:var(--hl)}
+.l.hl{box-shadow:0 0 0 4px var(--hl)}
+.vlist{max-height:55vh;overflow:auto;margin:8px 0}
+.vopt{display:block;width:100%;text-align:left;background:#fff;border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;margin:0 0 8px;font:inherit;font-size:15px;color:#000}
+.vopt.sel{border-color:#000;border-width:2px;font-weight:600}
+.vopt i{font-style:normal;color:var(--muted);font-size:13px}
 .fb{border-radius:12px;padding:12px;margin:4px 0 12px;font-size:15px;background:var(--soft)}
 .fb.ok{background:#e9f6ec}.fb.no{background:#fdecec}
 .fb .head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
@@ -98,12 +103,22 @@ function pick(){
 var TTS = { on:false, timer:null, gotBoundary:false, words:[], btn:null };
 var synth = window.speechSynthesis || null;
 var voice = null;
+var VKEY = KEY + ".voice";
+function enVoices(){
+  if(!synth) return [];
+  var vs = synth.getVoices().filter(function(v){ return /^en/i.test(v.lang) && !/compact|eloquence|novelty/i.test(v.voiceURI||""); });
+  function rank(v){ return (/premium/i.test(v.name+v.voiceURI)?0:/enhanced/i.test(v.name+v.voiceURI)?1:2)*10 + (/^en[-_]US/i.test(v.lang)?0:1); }
+  return vs.sort(function(a,b){ return rank(a)-rank(b) || a.name.localeCompare(b.name); });
+}
+function voiceTier(v){ var s=v.name+" "+(v.voiceURI||""); return /premium/i.test(s)?"Premium":/enhanced/i.test(s)?"Enhanced":""; }
 function pickVoice(){
   if(!synth) return;
-  var vs = synth.getVoices().filter(function(v){ return /^en[-_]US/i.test(v.lang); });
-  if(!vs.length) vs = synth.getVoices().filter(function(v){ return /^en/i.test(v.lang); });
-  var pref = [/premium/i,/enhanced/i,/samantha/i,/ava/i,/allison/i,/susan/i];
-  for(var i=0;i<pref.length && !voice;i++){ voice = vs.find(function(v){ return pref[i].test(v.name); }) || null; }
+  var vs = enVoices(), saved=null; try{ saved=localStorage.getItem(VKEY); }catch(e){}
+  voice = (saved && vs.find(function(v){ return v.voiceURI===saved; })) || null;
+  if(!voice){
+    var pref = [/premium/i,/enhanced/i,/samantha/i,/ava/i,/allison/i];
+    for(var i=0;i<pref.length && !voice;i++){ voice = vs.find(function(v){ return pref[i].test(v.name+" "+v.voiceURI) && /^en[-_]US/i.test(v.lang); }) || null; }
+  }
   if(!voice) voice = vs.find(function(v){ return v.default; }) || vs[0] || null;
 }
 if(synth){ pickVoice(); if(synth.addEventListener) synth.addEventListener("voiceschanged", function(){ voice=null; pickVoice(); }); }
@@ -123,7 +138,7 @@ function wordsHTML(text, seg){
     return '<span class="w" data-seg="'+seg+'">'+esc(t)+'</span>';
   }).join("");
 }
-function clearHL(){ var o=app.querySelectorAll(".w.hl"); for(var i=0;i<o.length;i++) o[i].classList.remove("hl"); }
+function clearHL(){ var o=app.querySelectorAll(".hl"); for(var i=0;i<o.length;i++) o[i].classList.remove("hl"); }
 function stopTTS(){
   TTS.on=false; clearTimeout(TTS.timer);
   if(synth){ try{ synth.cancel(); }catch(e){} }
@@ -133,16 +148,34 @@ function stopTTS(){
 function speakSegs(segs, btn){
   if(!synth){ btn.querySelector("b").textContent="Speech not available"; return; }
   stopTTS(); TTS.on=true; TTS.btn=btn; btn.classList.add("on"); btn.querySelector("b").textContent="Stop";
+  // Expand each segment into an optional short intro ("Answer B"), a pause, then the highlighted text.
+  var steps=[];
+  segs.forEach(function(sg){
+    if(sg.prefix) steps.push({intro:sg.prefix, badge:sg.badge, pause:450});
+    steps.push({seg:sg.seg});
+  });
   var i=0;
-  function next(){
-    if(!TTS.on) return;
-    if(i>=segs.length){ stopTTS(); return; }
-    var sg=segs[i++], spans=[].slice.call(app.querySelectorAll('.w[data-seg="'+sg.seg+'"]'));
-    var text=sg.prefix||"", starts=[];
-    spans.forEach(function(s){ if(text) text+=" "; starts.push(text.length); text+=spoken(s.textContent); });
+  function utter(text){
     var u=new SpeechSynthesisUtterance(text);
     if(voice){ u.voice=voice; u.lang=voice.lang; } else u.lang="en-US";
-    u.rate=0.95;
+    u.rate=0.95; return u;
+  }
+  function next(){
+    if(!TTS.on) return;
+    if(i>=steps.length){ stopTTS(); return; }
+    var st=steps[i++];
+    if(st.intro){
+      var b=st.badge?app.querySelector(st.badge):null;
+      var ui=utter(st.intro);
+      ui.onstart=function(){ clearHL(); if(b&&TTS.on) b.classList.add("hl"); };
+      ui.onend=function(){ setTimeout(function(){ if(b) b.classList.remove("hl"); next(); }, st.pause); };
+      ui.onerror=function(){ if(TTS.on) setTimeout(next, st.pause); };
+      synth.speak(ui); return;
+    }
+    var spans=[].slice.call(app.querySelectorAll('.w[data-seg="'+st.seg+'"]'));
+    var text="", starts=[];
+    spans.forEach(function(s){ if(text) text+=" "; starts.push(text.length); text+=spoken(s.textContent); });
+    var u=utter(text);
     var hlAt=function(ci){
       var k=-1; for(var j=0;j<starts.length;j++){ if(starts[j]<=ci) k=j; else break; }
       clearHL(); if(k>=0 && spans[k]) spans[k].classList.add("hl");
@@ -196,7 +229,7 @@ function render(){
   S.cur.order.forEach(function(oi,pos){
     var cls="opt";
     if(chosen!==null){ if(oi===ansIdx) cls+=" right"; else if(oi===chosen) cls+=" wrong"; else cls+=" dim"; }
-    html += '<button class="'+cls+'" data-opt="'+oi+'"><span class="l">'+"ABCD"[pos]+'</span><span>'+wordsHTML(q.options[oi],"o"+pos)+'</span></button>';
+    html += '<button class="'+cls+'" data-opt="'+oi+'"><span class="l" data-b="o'+pos+'">'+"ABCD"[pos]+'</span><span>'+wordsHTML(q.options[oi],"o"+pos)+'</span></button>';
   });
   if(chosen!==null){
     var ok = chosen===ansIdx, np = prog(q.id);
@@ -207,7 +240,7 @@ function render(){
     if(q.wrong){
       S.cur.order.forEach(function(oi,pos){
         if(oi===ansIdx || !q.wrong[oi]) return;
-        html += '<div class="wr"><span class="l">'+"ABCD"[pos]+'</span><span>'+wordsHTML(q.wrong[oi],"x"+pos)+'</span></div>';
+        html += '<div class="wr"><span class="l" data-b="x'+pos+'">'+"ABCD"[pos]+'</span><span>'+wordsHTML(q.wrong[oi],"x"+pos)+'</span></div>';
       });
     }
     html += '</div><button class="btn" data-act="next">Next question</button>';
@@ -219,13 +252,13 @@ function render(){
 
 function readQuestion(btn){
   var segs=[{seg:"q"}];
-  for(var pos=0;pos<4;pos++) segs.push({seg:"o"+pos, prefix:"Answer "+"ABCD"[pos]+"."});
+  for(var pos=0;pos<4;pos++) segs.push({seg:"o"+pos, prefix:"Answer "+"ABCD"[pos], badge:'[data-b="o'+pos+'"]'});
   speakSegs(segs, btn);
 }
 function readExplanation(btn){
   var q=curQ(), ansIdx="ABCD".indexOf(q.answer), cp=S.cur.order.indexOf(ansIdx);
-  var segs=[{seg:"why", prefix:"The right answer is "+"ABCD"[cp]+"."}];
-  S.cur.order.forEach(function(oi,pos){ if(oi!==ansIdx && q.wrong && q.wrong[oi]) segs.push({seg:"x"+pos, prefix:"Answer "+"ABCD"[pos]+" is wrong."}); });
+  var segs=[{seg:"why", prefix:"The right answer is "+"ABCD"[cp], badge:'[data-b="o'+cp+'"]'}];
+  S.cur.order.forEach(function(oi,pos){ if(oi!==ansIdx && q.wrong && q.wrong[oi]) segs.push({seg:"x"+pos, prefix:"Answer "+"ABCD"[pos]+" is wrong", badge:'[data-b="x'+pos+'"]'}); });
   speakSegs(segs, btn);
 }
 
@@ -252,14 +285,35 @@ function menu(){
   var c=counts();
   d.innerHTML='<div><p><b>'+c.known+' of '+c.total+'</b> questions known.</p>'+
     '<button class="btn alt" data-act="close">Keep studying</button>'+
+    '<button class="btn alt" data-act="voices" style="margin-top:10px">Reading voice: '+esc(voice?voice.name:"default")+'</button>'+
     '<button class="btn alt" data-act="reset1" style="margin-top:10px">Start over from zero</button></div>';
   document.body.appendChild(d);
   d.addEventListener("click",function(e){
     var t=e.target.closest("[data-act]");
-    if(e.target===d || (t&&t.dataset.act==="close")){ d.remove(); return; }
+    if(e.target===d || (t&&t.dataset.act==="close")){ if(synth) synth.cancel(); d.remove(); return; }
+    if(t&&t.dataset.act==="voices"){ voiceSheet(d.firstChild); return; }
+    if(t&&t.dataset.act==="voice"){
+      var v=enVoices().find(function(x){ return x.voiceURI===t.dataset.uri; });
+      if(v){ voice=v; try{ localStorage.setItem(VKEY,v.voiceURI); }catch(err){}
+        synth.cancel(); var u=new SpeechSynthesisUtterance("Hi Ruby. This is how I will read your questions."); u.voice=v; u.lang=v.lang; u.rate=0.95; synth.speak(u);
+        voiceSheet(d.firstChild); }
+      return;
+    }
     if(t&&t.dataset.act==="reset1"){ t.textContent="Tap again to erase all progress"; t.dataset.act="reset2"; t.style.borderColor="#c62828"; t.style.color="#c62828"; return; }
     if(t&&t.dataset.act==="reset2"){ var r=S.round; S=fresh(); S.round=r; save(); d.remove(); render(); }
   });
+}
+
+function voiceSheet(box){
+  var vs=enVoices();
+  var hasGood=vs.some(function(v){ return voiceTier(v); });
+  box.innerHTML='<p><b>Choose a reading voice</b><br><span class="small">Tap a voice to hear it.</span></p><div class="vlist">'+
+    (vs.length? vs.map(function(v){
+      var t=voiceTier(v);
+      return '<button class="vopt'+(voice&&v.voiceURI===voice.voiceURI?' sel':'')+'" data-act="voice" data-uri="'+esc(v.voiceURI)+'">'+esc(v.name)+(t?' · '+t:'')+' <i>'+esc(v.lang)+'</i></button>';
+    }).join("") : '<p class="small">No voices found on this device.</p>')+'</div>'+
+    (hasGood?'':'<p class="small">For a much better voice, download one on the iPhone: Settings → Accessibility → Spoken Content → Voices → English, then pick a voice marked Premium or Enhanced (for example Ava or Zoe) and download it. Then close and reopen this app.</p>')+
+    '<button class="btn alt" data-act="close">Done</button>';
 }
 
 app.addEventListener("click",function(e){
