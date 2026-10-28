@@ -55,7 +55,7 @@ lock = threading.Lock(); chars = [0]; fails = []
 
 def run(key, intro, display):
     text, starts = build_text(intro, display)
-    h = hashlib.sha1((VOICE + "|" + text).encode()).hexdigest()[:12]
+    h = hashlib.sha1((VOICE + "|" + ("ssml2|" if intro is not None else "") + text).encode()).hexdigest()[:12]
     path = OUT / f"{key}.mp3"
     if man["clips"].get(key, {}).get("h") == h and path.exists(): return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,12 @@ def run(key, intro, display):
             if evt.boundary_type == sdk.SpeechSynthesisBoundaryType.Word:
                 bounds.append((round(evt.audio_offset / 10000), evt.text_offset))
         synth.synthesis_word_boundary.connect(wb)
-        r = synth.speak_text_async(text).get()
+        if intro is not None:
+            ssml = ('<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">'
+                    f'<voice name="{VOICE}">' + re.sub(r"\b([A-D])\b", r'<say-as interpret-as="characters">\1</say-as>', text) + '</voice></speak>')
+            r = synth.speak_ssml_async(ssml).get()
+        else:
+            r = synth.speak_text_async(text).get()
         if r.reason == sdk.ResultReason.SynthesizingAudioCompleted: break
     else:
         fails.append(key); return
