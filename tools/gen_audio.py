@@ -24,6 +24,7 @@ def spoken(w):  # must mirror spoken() in index.html
 
 def plan():
     data = json.load(open("questions.json"))["questions"]
+    if os.environ.get("LIMIT"): data = data[:int(os.environ["LIMIT"])]
     jobs = {}
     for L in "ABCD":
         jobs[f"_intro/ans{L}"] = (f"Answer {L}", None)
@@ -85,8 +86,8 @@ def run(key, intro, display):
 
 jobs = plan()
 keys = sorted(jobs)
-# drop clips that no longer exist
-for k in list(man["clips"]):
+# drop clips that no longer exist (full runs only)
+for k in ([] if os.environ.get("LIMIT") else list(man["clips"])):
     if k not in jobs:
         man["clips"].pop(k); p = OUT / f"{k}.mp3"
         if p.exists(): p.unlink()
