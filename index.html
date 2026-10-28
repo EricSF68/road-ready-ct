@@ -44,6 +44,8 @@ h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.2px}
 .opt.wrong{border-color:var(--bad);background:#fdecec}
 .opt.wrong .l{background:var(--bad);border-color:var(--bad);color:#fff}
 .opt.dim{opacity:.6}
+.opt.locked{opacity:.4}
+.wait{margin:2px 0 10px}.wait .bar{margin:6px 0 0}
 .w{border-radius:3px}
 .w.hl{background:var(--hl)}
 .l.hl{box-shadow:0 0 0 4px var(--hl)}
@@ -106,7 +108,13 @@ var voice = null;
 var VKEY = KEY + ".voice";
 function enVoices(){
   if(!synth) return [];
-  var vs = synth.getVoices().filter(function(v){ return /^en/i.test(v.lang) && !/compact|eloquence|novelty/i.test(v.voiceURI||""); });
+  // Hide Apple's novelty "Effects" and robotic "Eloquence" voices, and duplicates.
+  var junk = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Fred|Junior|Kathy|Ralph|Eddy|Flo|Grandma|Grandpa|Reed|Rocko|Sandy|Shelley)\b/i;
+  var seen = {};
+  var vs = synth.getVoices().filter(function(v){
+    if(!/^en/i.test(v.lang) || junk.test(v.name) || /eloquence|novelty|speech\.synthesis\.voice/i.test(v.voiceURI||"")) return false;
+    var k=v.name+"|"+v.lang; if(seen[k]) return false; seen[k]=1; return true;
+  });
   function rank(v){ return (/premium/i.test(v.name+v.voiceURI)?0:/enhanced/i.test(v.name+v.voiceURI)?1:2)*10 + (/^en[-_]US/i.test(v.lang)?0:1); }
   return vs.sort(function(a,b){ return rank(a)-rank(b) || a.name.localeCompare(b.name); });
 }
@@ -226,6 +234,12 @@ function render(){
   var tag = chosen!==null ? '' : (p.s===1?'Get this right once more to know it':(p.a>0?'You missed this one before':'New question'));
   html += '<div class="row"><div class="tag">'+tag+'</div>'+(chosen===null?sayBtn("readq"):'')+'</div>';
   html += '<p class="q">'+wordsHTML(q.q,"q")+'</p>';
+  var need=0, left=0;
+  if(chosen===null && delayOn()){
+    if(!S.cur.shownAt){ S.cur.shownAt=Date.now(); save(); }
+    need=readMs(q.q); left=S.cur.shownAt+need-Date.now();
+    if(left>0) html += '<div class="wait"><div class="small">Read the question first. The answers unlock in a moment.</div><div class="bar"><i style="width:'+Math.round(100*(need-left)/need)+'%"></i></div></div>';
+  }
   S.cur.order.forEach(function(oi,pos){
     var cls="opt";
     if(chosen!==null){ if(oi===ansIdx) cls+=" right"; else if(oi===chosen) cls+=" wrong"; else cls+=" dim"; }
@@ -248,6 +262,26 @@ function render(){
   app.innerHTML = html;
   if(chosen!==null){ var f=app.querySelector('.fb'); if(f) f.scrollIntoView({block:"start",behavior:"instant"}); }
   else window.scrollTo(0,0);
+  if(chosen===null && delayOn() && left>0) lockAnswers(left, need);
+}
+
+/* ---------- Delay answering: answers stay locked until a normal-to-fast reader (~250 words/min) could read the question ---------- */
+var DKEY = KEY + ".delay", lockTimer=null;
+function delayOn(){ try{ return localStorage.getItem(DKEY)==="1"; }catch(e){ return false; } }
+function readMs(text){ var words=String(text).trim().split(/\s+/).length; return Math.max(2000, Math.round(words/250*60000)); }
+function lockAnswers(left, need){
+  clearInterval(lockTimer);
+  var opts=app.querySelectorAll(".opt"); for(var i=0;i<opts.length;i++){ opts[i].classList.add("locked"); opts[i].disabled=true; }
+  var end=Date.now()+left, bar=app.querySelector(".wait .bar i");
+  lockTimer=setInterval(function(){
+    var rem=end-Date.now();
+    if(bar) bar.style.width=Math.min(100,Math.round(100*(need-Math.max(0,rem))/need))+"%";
+    if(rem<=0){
+      clearInterval(lockTimer);
+      var o=app.querySelectorAll(".opt.locked"); for(var j=0;j<o.length;j++){ o[j].classList.remove("locked"); o[j].disabled=false; }
+      var w=app.querySelector(".wait"); if(w) w.remove();
+    }
+  },100);
 }
 
 function readQuestion(btn){
@@ -274,6 +308,8 @@ function renderDone(){
 
 function answer(oi){
   if(!S.cur || S.cur.chosen!==null) return;
+  if(app.querySelector(".opt.locked")) return;
+  clearInterval(lockTimer);
   var q = curQ(), ok = oi === "ABCD".indexOf(q.answer), p = prog(q.id);
   p.a++; if(ok){ p.s=Math.min(2,p.s+1); } else { p.s=0; p.w++; }
   S.p[q.id]=p; S.cur.chosen=oi; save(); render();
@@ -286,11 +322,13 @@ function menu(){
   d.innerHTML='<div><p><b>'+c.known+' of '+c.total+'</b> questions known.</p>'+
     '<button class="btn alt" data-act="close">Keep studying</button>'+
     '<button class="btn alt" data-act="voices" style="margin-top:10px">Reading voice: '+esc(voice?voice.name:"default")+'</button>'+
+    '<button class="btn alt" data-act="delay" style="margin-top:10px">Delay answering: '+(delayOn()?'ON':'OFF')+'</button>'+
+    '<button class="btn alt" data-act="reload" style="margin-top:10px">Reload app (keeps progress)</button>'+
     '<button class="btn alt" data-act="reset1" style="margin-top:10px">Start over from zero</button></div>';
   document.body.appendChild(d);
   d.addEventListener("click",function(e){
     var t=e.target.closest("[data-act]");
-    if(e.target===d || (t&&t.dataset.act==="close")){ if(synth) synth.cancel(); d.remove(); return; }
+    if(e.target===d || (t&&t.dataset.act==="close")){ if(synth) synth.cancel(); d.remove(); render(); return; }
     if(t&&t.dataset.act==="voices"){ voiceSheet(d.firstChild); return; }
     if(t&&t.dataset.act==="voice"){
       var v=enVoices().find(function(x){ return x.voiceURI===t.dataset.uri; });
@@ -300,7 +338,10 @@ function menu(){
       return;
     }
     if(t&&t.dataset.act==="reset1"){ t.textContent="Tap again to erase all progress"; t.dataset.act="reset2"; t.style.borderColor="#c62828"; t.style.color="#c62828"; return; }
-    if(t&&t.dataset.act==="reset2"){ var r=S.round; S=fresh(); S.round=r; save(); d.remove(); render(); }
+    if(t&&t.dataset.act==="delay"){ var on=!delayOn(); try{ localStorage.setItem(DKEY,on?"1":"0"); }catch(err){}
+      t.textContent="Delay answering: "+(on?"ON":"OFF"); if(S.cur && S.cur.chosen===null) S.cur.shownAt=Date.now(); save(); return; }
+    if(t&&t.dataset.act==="reload"){ location.reload(); return; }
+    if(t&&t.dataset.act==="reset2"){ var r=S.round; S=fresh(); S.round=r; save(); location.reload(); }
   });
 }
 
@@ -312,7 +353,7 @@ function voiceSheet(box){
       var t=voiceTier(v);
       return '<button class="vopt'+(voice&&v.voiceURI===voice.voiceURI?' sel':'')+'" data-act="voice" data-uri="'+esc(v.voiceURI)+'">'+esc(v.name)+(t?' · '+t:'')+' <i>'+esc(v.lang)+'</i></button>';
     }).join("") : '<p class="small">No voices found on this device.</p>')+'</div>'+
-    (hasGood?'':'<p class="small">For a much better voice, download one on the iPhone: Settings → Accessibility → Spoken Content → Voices → English, then pick a voice marked Premium or Enhanced (for example Ava or Zoe) and download it. Then close and reopen this app.</p>')+
+    (hasGood?'':'<p class="small">Note: Apple does not let web apps use the Enhanced or Premium voices you download in Settings, so they will not appear here. These are the built-in voices web apps can use.</p>')+
     '<button class="btn alt" data-act="close">Done</button>';
 }
 
