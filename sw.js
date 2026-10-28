@@ -1,6 +1,6 @@
 // Road Ready CT service worker: cache the app on install, serve offline.
 // Natural-voice audio lives in its own cache ("roadready-audio-*"), filled by the page, and is never deleted on updates.
-var CACHE = "roadready-39b76819963434";
+var CACHE = "roadready-39b7681904100f";
 var FILES = ["./", "index.html", "questions.json", "manifest.webmanifest", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", function (e) {

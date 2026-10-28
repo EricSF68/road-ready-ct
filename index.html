@@ -244,7 +244,11 @@ function speakSegs(segs, btn){
       var url=URL.createObjectURL(blob), spans=spansOf(st), t=c.t||[];
       clearHL();
       if(st.badge){ var b=app.querySelector(st.badge); if(b) b.classList.add("hl"); }
-      player.onended=function(){ URL.revokeObjectURL(url); cancelAnimationFrame(TTS.raf); clearHL(); after(st, st.intro?60:120); };
+      var finished=false;
+      function done(){ if(finished) return; finished=true; try{ player.pause(); }catch(e){} URL.revokeObjectURL(url); cancelAnimationFrame(TTS.raf); clearHL(); after(st, st.intro?120:200); }
+      player.onended=done;
+      // Azure clips end with ~0.85 s of silence; cut it so gaps stay short.
+      var cut=(c.d||0)-650;
       player.onerror=function(){ URL.revokeObjectURL(url); cancelAnimationFrame(TTS.raf); speakStep(st); };
       player.src=url; player.playbackRate=1;
       var p=player.play(); if(p&&p.catch) p.catch(function(){ speakStep(st); });
@@ -253,6 +257,7 @@ function speakSegs(segs, btn){
         if(!live()) return;
         var ms=player.currentTime*1000, k=-1;
         for(var j=0;j<t.length;j++){ if(t[j][0]<=ms) k=t[j][1]; else break; }
+        if(cut>500 && ms>=cut){ done(); return; }
         if(k!==last){ if(last>=0&&spans[last]) spans[last].classList.remove("hl"); if(k>=0&&spans[k]) spans[k].classList.add("hl"); last=k; }
         TTS.raf=requestAnimationFrame(frame);
       })();
