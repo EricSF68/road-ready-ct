@@ -148,40 +148,121 @@ function wordsHTML(text, seg){
 }
 function clearHL(){ var o=app.querySelectorAll(".hl"); for(var i=0;i<o.length;i++) o[i].classList.remove("hl"); }
 function stopTTS(){
-  TTS.on=false; clearTimeout(TTS.timer);
+  TTS.on=false; TTS.run=(TTS.run||0)+1; clearTimeout(TTS.timer); cancelAnimationFrame(TTS.raf||0);
   if(synth){ try{ synth.cancel(); }catch(e){} }
+  try{ player.pause(); }catch(e){}
   clearHL(); if(TTS.btn){ TTS.btn.classList.remove("on"); TTS.btn.querySelector("b").textContent="Read aloud"; }
 }
-// segs: [{prefix:"spoken intro", seg:id}] ; words come from DOM spans with data-seg
+
+/* ---------- Natural voice (Azure "Sara"), pre-recorded clips with word timings, stored offline ---------- */
+var SARA = { base:"audio/sara/", cache:"roadready-audio-sara", man:null, dl:null };
+var SARA_KEY = KEY + ".sara";            // "1" = use Sara when downloaded
+var player = new Audio(); player.preload="auto";
+var SILENT = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQxAADB8AhSmxhIIEVCSiJrDCQBTcu3UrAIwUdkRgQbFAZC1CQEwTJ9mjRvBA4UOLD8nKVOWfh+UlK3z/177OXrfOdKl7pyn3Xf//WreyTRUoAWgBgkOAGbZHBgG1OF6zM82DWbZaUmMBptgQhGjsyYqc9ae9XFz280948NMBWInljyzsNRFLPWdnZGWrddDsjK1unuSrVN9jJsK8KuQtQCtMBjCEtImISdNKJOopIpBFpNSMbIHCSRpRR5iakjTiyzLhchUUBwCgyKiweBv/7UsQbg8isVNoMPMjAAAA0gAAABEVFGmgqK////9bP/6XCykxBTUUzLjEwMKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
+function saraOn(){ try{ return localStorage.getItem(SARA_KEY)!=="0"; }catch(e){ return true; } }
+function saraReady(){ return !!(SARA.man && SARA.man.complete); }
+function unlockAudio(){ // must run inside the tap so iOS allows later playback
+  if(SARA.unlocked) return; SARA.unlocked=true;
+  try{ player.src=SILENT; var p=player.play(); if(p&&p.catch) p.catch(function(){}); }catch(e){}
+}
+function loadSaraManifest(){
+  if(!window.caches) return Promise.resolve();
+  return caches.open(SARA.cache).then(function(c){ return c.match(SARA.base+"timings.json"); })
+    .then(function(r){ return r ? r.json() : null; })
+    .then(function(m){ if(m){ SARA.man=m; } })
+    .catch(function(){});
+}
+function clipBlob(key){
+  return caches.open(SARA.cache).then(function(c){ return c.match(SARA.base+key+".mp3"); })
+    .then(function(r){ return r ? r.blob() : null; });
+}
+// Download every clip (resumable: clips already stored are skipped). onProgress(done,total)
+function downloadSara(onProgress){
+  if(SARA.dl) return SARA.dl;
+  SARA.dl = fetch(SARA.base+"timings.json",{cache:"no-store"}).then(function(r){ if(!r.ok) throw new Error("not ready"); return r.json(); })
+  .then(function(m){
+    return caches.open(SARA.cache).then(function(c){
+      var keys=Object.keys(m.clips), done=0, total=keys.length, idx=0, failed=0;
+      function one(){
+        if(idx>=keys.length) return Promise.resolve();
+        var k=keys[idx++], url=SARA.base+k+".mp3";
+        return c.match(url).then(function(hit){
+          if(hit) return;
+          return fetch(url).then(function(r){ if(!r.ok) throw 0; return c.put(url,r); }).catch(function(){ failed++; });
+        }).then(function(){ done++; if(onProgress) onProgress(done,total); return one(); });
+      }
+      var workers=[]; for(var w=0;w<6;w++) workers.push(one());
+      return Promise.all(workers).then(function(){
+        if(failed) throw new Error(failed+" files failed");
+        m.complete=true;
+        return c.put(SARA.base+"timings.json", new Response(JSON.stringify(m),{headers:{"Content-Type":"application/json"}}));
+      }).then(function(){ SARA.man=m; });
+    });
+  }).finally(function(){ SARA.dl=null; });
+  return SARA.dl;
+}
+function removeSara(){ SARA.man=null; return caches.delete(SARA.cache); }
+
+// segs: [{seg, clip, prefix, introClip, badge}] ; words come from DOM spans with data-seg
 function speakSegs(segs, btn){
-  if(!synth){ btn.querySelector("b").textContent="Speech not available"; return; }
+  var useSara = saraOn() && saraReady();
+  if(!useSara && !synth){ btn.querySelector("b").textContent="Speech not available"; return; }
   stopTTS(); TTS.on=true; TTS.btn=btn; btn.classList.add("on"); btn.querySelector("b").textContent="Stop";
-  // Expand each segment into an optional short intro ("Answer B"), a pause, then the highlighted text.
+  var run=TTS.run;
   var steps=[];
   segs.forEach(function(sg){
-    if(sg.prefix) steps.push({intro:sg.prefix, badge:sg.badge, pause:450});
-    steps.push({seg:sg.seg});
+    if(sg.prefix) steps.push({intro:sg.prefix, clip:sg.introClip, badge:sg.badge, pause:450});
+    steps.push({seg:sg.seg, clip:sg.clip, pause:150});
   });
   var i=0;
+  function live(){ return TTS.on && TTS.run===run; }
+  function after(st){ setTimeout(function(){ if(st.badge){ var b=app.querySelector(st.badge); if(b) b.classList.remove("hl"); } if(live()) next(); }, st.pause); }
+  function next(){
+    if(!live()) return;
+    if(i>=steps.length){ stopTTS(); return; }
+    var st=steps[i++];
+    var c = useSara && st.clip && SARA.man.clips[st.clip];
+    if(c) playClip(st, c); else speakStep(st);
+  }
+  function spansOf(st){ return st.seg ? [].slice.call(app.querySelectorAll('.w[data-seg="'+st.seg+'"]')) : []; }
+  function playClip(st, c){
+    clipBlob(st.clip).then(function(blob){
+      if(!live()) return;
+      if(!blob){ speakStep(st); return; }
+      var url=URL.createObjectURL(blob), spans=spansOf(st), t=c.t||[];
+      clearHL();
+      if(st.badge){ var b=app.querySelector(st.badge); if(b) b.classList.add("hl"); }
+      player.onended=function(){ URL.revokeObjectURL(url); cancelAnimationFrame(TTS.raf); clearHL(); after(st); };
+      player.onerror=function(){ URL.revokeObjectURL(url); cancelAnimationFrame(TTS.raf); speakStep(st); };
+      player.src=url; player.playbackRate=1;
+      var p=player.play(); if(p&&p.catch) p.catch(function(){ speakStep(st); });
+      var last=-1;
+      (function frame(){
+        if(!live()) return;
+        var ms=player.currentTime*1000, k=-1;
+        for(var j=0;j<t.length;j++){ if(t[j][0]<=ms) k=t[j][1]; else break; }
+        if(k!==last){ if(last>=0&&spans[last]) spans[last].classList.remove("hl"); if(k>=0&&spans[k]) spans[k].classList.add("hl"); last=k; }
+        TTS.raf=requestAnimationFrame(frame);
+      })();
+    }).catch(function(){ speakStep(st); });
+  }
   function utter(text){
     var u=new SpeechSynthesisUtterance(text);
     if(voice){ u.voice=voice; u.lang=voice.lang; } else u.lang="en-US";
     u.rate=0.95; return u;
   }
-  function next(){
-    if(!TTS.on) return;
-    if(i>=steps.length){ stopTTS(); return; }
-    var st=steps[i++];
+  function speakStep(st){
+    if(!live()) return;
+    if(!synth){ after(st); return; }
     if(st.intro){
       var b=st.badge?app.querySelector(st.badge):null;
       var ui=utter(st.intro);
-      ui.onstart=function(){ clearHL(); if(b&&TTS.on) b.classList.add("hl"); };
-      ui.onend=function(){ setTimeout(function(){ if(b) b.classList.remove("hl"); next(); }, st.pause); };
-      ui.onerror=function(){ if(TTS.on) setTimeout(next, st.pause); };
+      ui.onstart=function(){ clearHL(); if(b&&live()) b.classList.add("hl"); };
+      ui.onend=function(){ after(st); };
+      ui.onerror=function(){ after(st); };
       synth.speak(ui); return;
     }
-    var spans=[].slice.call(app.querySelectorAll('.w[data-seg="'+st.seg+'"]'));
-    var text="", starts=[];
+    var spans=spansOf(st), text="", starts=[];
     spans.forEach(function(s){ if(text) text+=" "; starts.push(text.length); text+=spoken(s.textContent); });
     var u=utter(text);
     var hlAt=function(ci){
@@ -189,19 +270,18 @@ function speakSegs(segs, btn){
       clearHL(); if(k>=0 && spans[k]) spans[k].classList.add("hl");
     };
     TTS.gotBoundary=false;
-    u.onboundary=function(e){ if(!TTS.on) return; if(e.name && e.name!=="word") return; TTS.gotBoundary=true; clearTimeout(TTS.timer); hlAt(e.charIndex); };
+    u.onboundary=function(e){ if(!live()) return; if(e.name && e.name!=="word") return; TTS.gotBoundary=true; clearTimeout(TTS.timer); hlAt(e.charIndex); };
     u.onstart=function(){
-      if(!TTS.on) return;
-      // Fallback if this device sends no word events: estimate timing from word lengths.
+      if(!live()) return;
       var t0=Date.now(), cps=13.5*u.rate;
       (function tick(){
-        if(!TTS.on || TTS.gotBoundary) return;
+        if(!live() || TTS.gotBoundary) return;
         hlAt(Math.floor((Date.now()-t0)/1000*cps));
         TTS.timer=setTimeout(tick,90);
       })();
     };
-    u.onend=function(){ clearTimeout(TTS.timer); clearHL(); setTimeout(next,120); };
-    u.onerror=function(){ clearTimeout(TTS.timer); clearHL(); if(TTS.on) setTimeout(next,120); };
+    u.onend=function(){ clearTimeout(TTS.timer); clearHL(); after(st); };
+    u.onerror=function(){ clearTimeout(TTS.timer); clearHL(); after(st); };
     synth.speak(u);
   }
   // iOS sometimes drops a speak() issued right after cancel(); give it a moment.
@@ -285,14 +365,17 @@ function lockAnswers(left, need){
 }
 
 function readQuestion(btn){
-  var segs=[{seg:"q"}];
-  for(var pos=0;pos<4;pos++) segs.push({seg:"o"+pos, prefix:"Answer "+"ABCD"[pos], badge:'[data-b="o'+pos+'"]'});
+  var q=curQ(), id=q.id;
+  var segs=[{seg:"q", clip:id+"/q"}];
+  S.cur.order.forEach(function(oi,pos){ var L="ABCD"[pos];
+    segs.push({seg:"o"+pos, clip:id+"/o"+oi, prefix:"Answer "+L, introClip:"_intro/ans"+L, badge:'[data-b="o'+pos+'"]'}); });
   speakSegs(segs, btn);
 }
 function readExplanation(btn){
-  var q=curQ(), ansIdx="ABCD".indexOf(q.answer), cp=S.cur.order.indexOf(ansIdx);
-  var segs=[{seg:"why", prefix:"The right answer is "+"ABCD"[cp], badge:'[data-b="o'+cp+'"]'}];
-  S.cur.order.forEach(function(oi,pos){ if(oi!==ansIdx && q.wrong && q.wrong[oi]) segs.push({seg:"x"+pos, prefix:"Answer "+"ABCD"[pos]+" is wrong", badge:'[data-b="x'+pos+'"]'}); });
+  var q=curQ(), id=q.id, ansIdx="ABCD".indexOf(q.answer), cp=S.cur.order.indexOf(ansIdx), CL="ABCD"[cp];
+  var segs=[{seg:"why", clip:id+"/why", prefix:"The right answer is "+CL, introClip:"_intro/right"+CL, badge:'[data-b="o'+cp+'"]'}];
+  S.cur.order.forEach(function(oi,pos){ var L="ABCD"[pos];
+    if(oi!==ansIdx && q.wrong && q.wrong[oi]) segs.push({seg:"x"+pos, clip:id+"/x"+oi, prefix:"Answer "+L+" is wrong", introClip:"_intro/wrong"+L, badge:'[data-b="x'+pos+'"]'}); });
   speakSegs(segs, btn);
 }
 
@@ -321,7 +404,7 @@ function menu(){
   var c=counts();
   d.innerHTML='<div><p><b>'+c.known+' of '+c.total+'</b> questions known.</p>'+
     '<button class="btn alt" data-act="close">Keep studying</button>'+
-    '<button class="btn alt" data-act="voices" style="margin-top:10px">Reading voice: '+esc(voice?voice.name:"default")+'</button>'+
+    '<button class="btn alt" data-act="voices" style="margin-top:10px">Reading voice: '+esc(voiceLabel())+'</button>'+
     '<button class="btn alt" data-act="delay" style="margin-top:10px">Delay answering: '+(delayOn()?'ON':'OFF')+'</button>'+
     '<button class="btn alt" data-act="reload" style="margin-top:10px">Reload app (keeps progress)</button>'+
     '<button class="btn alt" data-act="reset1" style="margin-top:10px">Start over from zero</button></div>';
@@ -330,9 +413,19 @@ function menu(){
     var t=e.target.closest("[data-act]");
     if(e.target===d || (t&&t.dataset.act==="close")){ if(synth) synth.cancel(); d.remove(); render(); return; }
     if(t&&t.dataset.act==="voices"){ voiceSheet(d.firstChild); return; }
+    if(t&&t.dataset.act==="dlsara"){
+      unlockAudio(); var box=d.firstChild;
+      downloadSara(function(done,total){ var el=document.getElementById("saraProg"); if(el) el.innerHTML='Sara · natural voice<br><i>Downloading… '+Math.floor(100*done/total)+'% ('+done+' of '+total+' clips). Keep the app open.</i>'; })
+        .then(function(){ try{ localStorage.setItem(SARA_KEY,"1"); }catch(err){} if(document.body.contains(box)) voiceSheet(box); sampleSara(); })
+        .catch(function(err){ if(document.body.contains(box)){ voiceSheet(box); var el=box.querySelector('[data-act=dlsara] i'); if(el) el.textContent="Download stopped ("+(err&&err.message||"network")+"). Tap to resume."; } });
+      voiceSheet(box); return;
+    }
+    if(t&&t.dataset.act==="usesara"){ unlockAudio(); try{ localStorage.setItem(SARA_KEY,"1"); }catch(err){} voiceSheet(d.firstChild); sampleSara(); return; }
+    if(t&&t.dataset.act==="rmsara"){ t.textContent="Tap again to remove the Sara download"; t.dataset.act="rmsara2"; return; }
+    if(t&&t.dataset.act==="rmsara2"){ removeSara().then(function(){ voiceSheet(d.firstChild); }); return; }
     if(t&&t.dataset.act==="voice"){
       var v=enVoices().find(function(x){ return x.voiceURI===t.dataset.uri; });
-      if(v){ voice=v; try{ localStorage.setItem(VKEY,v.voiceURI); }catch(err){}
+      if(v){ voice=v; try{ localStorage.setItem(VKEY,v.voiceURI); localStorage.setItem(SARA_KEY,"0"); }catch(err){}
         synth.cancel(); var u=new SpeechSynthesisUtterance("Hi Ruby. This is how I will read your questions."); u.voice=v; u.lang=v.lang; u.rate=0.95; synth.speak(u);
         voiceSheet(d.firstChild); }
       return;
@@ -345,23 +438,32 @@ function menu(){
   });
 }
 
+function voiceLabel(){ return (saraOn()&&saraReady()) ? "Sara (natural)" : (voice?voice.name:"default"); }
 function voiceSheet(box){
-  var vs=enVoices();
-  var hasGood=vs.some(function(v){ return voiceTier(v); });
-  box.innerHTML='<p><b>Choose a reading voice</b><br><span class="small">Tap a voice to hear it.</span></p><div class="vlist">'+
+  var vs=enVoices(), usingSara=saraOn()&&saraReady();
+  var sara;
+  if(SARA.dl) sara='<div class="vopt sel" id="saraProg">Sara · natural voice<br><i>Downloading… keep the app open</i></div>';
+  else if(saraReady()) sara='<button class="vopt'+(usingSara?' sel':'')+'" data-act="usesara">Sara · natural voice'+(usingSara?' ✓':'')+' <i>downloaded</i></button>'+
+      '<button class="vopt" data-act="rmsara" style="font-size:13px;color:#666">Remove Sara download (frees about 250 MB)</button>';
+  else sara='<button class="vopt" data-act="dlsara">Download Sara · natural voice<br><i>About 250 MB, use Wi-Fi. Works offline afterward.</i></button>';
+  box.innerHTML='<p><b>Choose a reading voice</b></p>'+sara+
+    '<p class="small" style="margin:14px 0 4px">iPhone voices (no download)</p><div class="vlist">'+
     (vs.length? vs.map(function(v){
-      var t=voiceTier(v);
-      return '<button class="vopt'+(voice&&v.voiceURI===voice.voiceURI?' sel':'')+'" data-act="voice" data-uri="'+esc(v.voiceURI)+'">'+esc(v.name)+(t?' · '+t:'')+' <i>'+esc(v.lang)+'</i></button>';
+      var t=voiceTier(v), sel=!usingSara&&voice&&v.voiceURI===voice.voiceURI;
+      return '<button class="vopt'+(sel?' sel':'')+'" data-act="voice" data-uri="'+esc(v.voiceURI)+'">'+esc(v.name)+(t?' · '+t:'')+' <i>'+esc(v.lang)+'</i></button>';
     }).join("") : '<p class="small">No voices found on this device.</p>')+'</div>'+
-    (hasGood?'':'<p class="small">Note: Apple does not let web apps use the Enhanced or Premium voices you download in Settings, so they will not appear here. These are the built-in voices web apps can use.</p>')+
+    '<p class="small">Apple does not let web apps use the Enhanced or Premium voices downloaded in Settings, so they do not appear here.</p>'+
     '<button class="btn alt" data-act="close">Done</button>';
+}
+function sampleSara(){
+  clipBlob("_intro/rightA").then(function(bl){ if(!bl) return; var u=URL.createObjectURL(bl); player.onended=function(){URL.revokeObjectURL(u);}; player.onerror=null; player.src=u; player.play().catch(function(){}); });
 }
 
 app.addEventListener("click",function(e){
   var o=e.target.closest("[data-opt]"); if(o){ stopTTS(); answer(+o.dataset.opt); return; }
   var t=e.target.closest("[data-act]"); if(!t) return;
   var a=t.dataset.act;
-  if(a==="readq"||a==="reade"){ if(TTS.on){ stopTTS(); return; } if(a==="readq") readQuestion(t); else readExplanation(t); }
+  if(a==="readq"||a==="reade"){ if(TTS.on){ stopTTS(); return; } unlockAudio(); if(a==="readq") readQuestion(t); else readExplanation(t); }
   else if(a==="next"){ S.last=S.cur&&S.cur.id; S.cur=null; pick(); render(); }
   else if(a==="again"){ var r=(S.round||1)+1; S=fresh(); S.round=r; save(); render(); }
   else if(a==="menu"){ menu(); }
@@ -373,6 +475,7 @@ function start(data){
   try{ localStorage.setItem(KEY+".q", JSON.stringify(data)); }catch(e){}
   S = load() || fresh();
   render();
+  loadSaraManifest();
 }
 fetch("questions.json",{cache:"no-cache"}).then(function(r){ if(!r.ok) throw 0; return r.json(); })
   .then(start)
