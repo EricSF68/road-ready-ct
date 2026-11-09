@@ -45,7 +45,17 @@ h1{font-size:19px;margin:0;font-weight:700;letter-spacing:-.2px}
 .opt.wrong .l{background:var(--bad);border-color:var(--bad);color:#fff}
 .opt.dim{opacity:.6}
 .opt.locked{opacity:.4}
-.wait{margin:2px 0 10px}.wait .bar{margin:6px 0 0}
+.wait{margin:2px 0 10px}
+.gauge{margin:2px 0 14px}
+.gl{display:flex;justify-content:space-between;align-items:baseline;font-size:15px}
+.gl span{font-size:14px;color:var(--muted)}.gl span b{font-size:20px}
+.gbar{position:relative;height:12px;background:var(--soft);border-radius:6px;margin:6px 0 2px;overflow:visible}
+.gbar i{display:block;height:100%;border-radius:6px;transition:width .4s,background .4s}
+.gbar s{position:absolute;top:-3px;bottom:-3px;width:2px;background:#000;text-decoration:none}
+.gm{position:relative;height:14px;font-size:11px;color:var(--muted)}
+.gm span{position:absolute;transform:translateX(-50%)}
+.gs{font-size:12px;color:var(--muted);margin-top:2px}
+.link{background:none;border:0;padding:0;font:inherit;color:#000;text-decoration:underline;font-weight:600}.wait .bar{margin:6px 0 0}
 .w{border-radius:3px}
 .w.hl{background:var(--hl)}
 .l.hl{box-shadow:0 0 0 4px var(--hl)}
@@ -307,6 +317,112 @@ function speakSegs(segs, btn){
 var SPK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
 function sayBtn(act){ return '<button class="say" data-act="'+act+'">'+SPK+'<b>Read aloud</b></button>'; }
 
+/* ---------- Pass-likelihood estimate ---------- */
+// First-try accuracy (questions answered the very first time) is the cleanest signal of real-test readiness.
+function ftAcc(){ var f=S.ft||{n:0,c:0}; return {n:f.n, c:f.c, est:(f.c+0.6*8)/(f.n+8)}; } // Beta prior: mean 60%, weight 8
+// Chance of answering a random real-test question correctly, averaged over the whole question bank.
+function pEst(){
+  var a=ftAcc().est, sum=0;
+  Q.forEach(function(q){ var p=prog(q.id);
+    sum += p.s>=2 ? 0.95 : p.s===1 ? 0.85 : p.a>0 ? 0.5 : a; });
+  return Q.length ? sum/Q.length : 0;
+}
+function passProb(p){ // P(at least 20 of 25 correct), binomial
+  var C=[1,25,300,2300,12650,53130], t=0;
+  for(var k=20;k<=25;k++) t += C[25-k]*Math.pow(p,k)*Math.pow(1-p,25-k);
+  return t;
+}
+function passHue(P){ // red -> yellow -> green, with yellow around 80% and full green by 95%
+  if(P<=0.5) return 0; if(P<=0.8) return (P-0.5)/0.3*50; if(P<=0.95) return 50+(P-0.8)/0.15*70; return 120;
+}
+function answeredCount(){ var n=0; for(var k in S.p) if(S.p[k].a>0) n++; return n; }
+function gaugeHTML(){
+  var n=answeredCount(), f=ftAcc();
+  var mocks=(S.mocks||[]).slice(-3).map(function(m){ return m.score+'/25'; }).join(', ');
+  var sub='First-try accuracy: '+(f.n?Math.round(100*f.c/f.n)+'% of '+f.n:'—')+(mocks?' · Practice tests: '+mocks:'');
+  if(n<10){
+    return '<div class="gauge"><div class="gl"><b>Likelihood of passing</b><span>answer '+(10-n)+' more to see it</span></div>'+
+      '<div class="gbar"><i style="width:0"></i><s style="left:80%"></s><s style="left:95%"></s></div>'+
+      '<div class="gm"><span style="left:80%">80%</span><span style="left:95%">95%</span></div>'+
+      '<div class="gs">'+sub+' <button class="link" data-act="mock">Take a practice test</button></div></div>';
+  }
+  var P=passProb(pEst()), pct=Math.round(100*P), col='hsl('+Math.round(passHue(P))+',75%,'+(P>0.8&&P<0.9?'42%':'45%')+')';
+  return '<div class="gauge"><div class="gl"><b>Likelihood of passing</b><span style="color:'+col+'"><b>'+pct+'%</b></span></div>'+
+    '<div class="gbar"><i style="width:'+Math.max(2,pct)+'%;background:'+col+'"></i><s style="left:80%"></s><s style="left:95%"></s></div>'+
+    '<div class="gm"><span style="left:80%">80%</span><span style="left:95%">95%</span></div>'+
+    '<div class="gs">'+sub+' <button class="link" data-act="mock">Take a practice test</button></div></div>';
+}
+function recordAnswer(q, ok){
+  var p=prog(q.id);
+  if(p.a===0){ S.ft=S.ft||{n:0,c:0}; S.ft.n++; if(ok) S.ft.c++; }
+  p.a++; if(ok){ p.s=Math.min(2,p.s+1); } else { p.s=0; p.w++; }
+  S.p[q.id]=p;
+}
+
+/* ---------- Practice test: 25 questions, 20 to pass, no feedback until the end ---------- */
+function byId(id){ return Q.find(function(x){ return x.id===id; }); }
+function startMock(){
+  var un=shuffle(Q.filter(function(q){ return prog(q.id).a===0; }));
+  var notKnown=shuffle(Q.filter(function(q){ var p=prog(q.id); return p.a>0 && p.s<2; }));
+  var rest=shuffle(Q.filter(function(q){ return prog(q.id).s>=2; }));
+  var ids=un.concat(notKnown,rest).slice(0,25).map(function(q){ return q.id; });
+  S.mock={ ids:ids, orders:ids.map(function(){ return shuffle([0,1,2,3]); }), ans:[], i:0, done:false, shownAt:0 };
+  save(); render();
+}
+function mockCtx(){ var m=S.mock; return { q:byId(m.ids[m.i]), order:m.orders[m.i] }; }
+function renderMock(){
+  var m=S.mock;
+  if(m.done) return renderMockResult();
+  var c=mockCtx(), q=c.q;
+  if(!q){ m.ans[m.i]=-1; m.i++; if(m.i>=m.ids.length) m.done=true; save(); return render(); }
+  var html='<header><h1>Practice test</h1><button class="menu" data-act="quitmock">Quit test</button></header>'+
+    '<div class="row"><div class="tag">Question '+(m.i+1)+' of '+m.ids.length+'</div>'+sayBtn("readq")+'</div>'+
+    '<div class="bar"><i style="width:'+(100*m.i/m.ids.length)+'%"></i></div>'+
+    '<p class="q">'+wordsHTML(q.q,"q")+'</p>';
+  var need=0,left=0;
+  if(delayOn()){
+    if(!m.shownAt){ m.shownAt=Date.now(); save(); }
+    need=readMs(q.q); left=m.shownAt+need-Date.now();
+    if(left>0) html += '<div class="wait"><div class="small">Read the question first. The answers unlock in a moment.</div><div class="bar"><i style="width:'+Math.round(100*(need-left)/need)+'%"></i></div></div>';
+  }
+  c.order.forEach(function(oi,pos){
+    html += '<button class="opt" data-mopt="'+oi+'"><span class="l" data-b="o'+pos+'">'+"ABCD"[pos]+'</span><span>'+wordsHTML(q.options[oi],"o"+pos)+'</span></button>';
+  });
+  html += '<p class="small">You will see your score and the right answers at the end.</p>';
+  app.innerHTML=html; window.scrollTo(0,0);
+  if(delayOn() && left>0) lockAnswers(left, need);
+}
+function mockAnswer(oi){
+  var m=S.mock; if(!m || m.done) return;
+  if(app.querySelector(".opt.locked")) return;
+  clearInterval(lockTimer);
+  var q=mockCtx().q, ok= oi==="ABCD".indexOf(q.answer);
+  recordAnswer(q, ok);
+  m.ans[m.i]=oi; m.i++; m.shownAt=0;
+  if(m.i>=m.ids.length){ m.done=true; var sc=mockScore(); S.mocks=(S.mocks||[]).concat([{t:Date.now(),score:sc}]).slice(-20); }
+  save(); render();
+}
+function mockScore(){ var m=S.mock, s=0; m.ids.forEach(function(id,i){ var q=byId(id); if(q && m.ans[i]==="ABCD".indexOf(q.answer)) s++; }); return s; }
+function renderMockResult(){
+  var m=S.mock, sc=mockScore(), pass=sc>=20;
+  var html='<header><h1>Practice test</h1></header>'+
+    '<div class="center" style="padding-top:6px"><div class="big" style="font-size:44px">'+sc+' / '+m.ids.length+'</div>'+
+    '<h2 style="margin:4px 0;color:'+(pass?'var(--ok)':'var(--bad)')+'">'+(pass?'Passed':'Not passed yet')+'</h2>'+
+    '<p class="small">The real test needs 20 of 25. '+(pass?'Nice work.':'Keep studying and try again.')+'</p></div>';
+  var miss=[];
+  m.ids.forEach(function(id,i){ var q=byId(id); if(q && m.ans[i]!=="ABCD".indexOf(q.answer)) miss.push([q,m.ans[i]]); });
+  if(miss.length){
+    html+='<h3>Review the ones you missed</h3>';
+    miss.forEach(function(x){ var q=x[0], ai="ABCD".indexOf(q.answer);
+      html+='<div class="fb no"><p style="margin-top:0"><b>'+esc(q.q)+'</b></p>'+
+        (x[1]>=0?'<p>Your answer: <span style="color:var(--bad)">'+esc(q.options[x[1]])+'</span></p>':'')+
+        '<p>Right answer: <b style="color:var(--ok)">'+esc(q.options[ai])+'</b></p>'+
+        '<p class="small" style="color:#222">'+esc(q.why||q.ref)+'</p></div>'; });
+  }
+  html+='<button class="btn" data-act="endmock">Back to studying</button>';
+  app.innerHTML=html; window.scrollTo(0,0);
+}
+
 /* ---------- Screens ---------- */
 function statsHTML(){
   var c=counts();
@@ -314,14 +430,14 @@ function statsHTML(){
     '<div class="stat"><b>'+c.known+'</b><span>Known</span></div>'+
     '<div class="stat"><b>'+c.once+'</b><span>Right 1×</span></div>'+
     '<div class="stat"><b>'+c.missed+'</b><span>Missed</span></div>'+
-    '<div class="stat"><b>'+c.unasked+'</b><span>Not asked</span></div></div>'+
-    '<div class="bar"><i style="width:'+(c.total?100*c.known/c.total:0)+'%"></i></div>';
+    '<div class="stat"><b>'+c.unasked+'</b><span>Not asked</span></div></div>'+gaugeHTML();
 }
 function head(){ return '<header><h1>Road Ready CT</h1><button class="menu" data-act="menu">Menu</button></header>'; }
 function curQ(){ return Q.find(function(x){return x.id===S.cur.id;}); }
 
 function render(){
   stopTTS();
+  if(S.mock) return renderMock();
   if(!S.cur && pool().length) pick();
   if(!S.cur){ return renderDone(); }
   var q = curQ();
@@ -382,9 +498,10 @@ function lockAnswers(left, need){
 }
 
 function readQuestion(btn){
-  var q=curQ(), id=q.id;
+  var c=S.mock&&!S.mock.done ? mockCtx() : {q:curQ(), order:S.cur.order};
+  var q=c.q, id=q.id;
   var segs=[{seg:"q", clip:id+"/q"}];
-  S.cur.order.forEach(function(oi,pos){ var L="ABCD"[pos];
+  c.order.forEach(function(oi,pos){ var L="ABCD"[pos];
     segs.push({seg:"o"+pos, clip:id+"/o"+oi, prefix:"Answer "+L, introClip:"_intro/ans"+L, badge:'[data-b="o'+pos+'"]'}); });
   speakSegs(segs, btn);
 }
@@ -410,9 +527,8 @@ function answer(oi){
   if(!S.cur || S.cur.chosen!==null) return;
   if(app.querySelector(".opt.locked")) return;
   clearInterval(lockTimer);
-  var q = curQ(), ok = oi === "ABCD".indexOf(q.answer), p = prog(q.id);
-  p.a++; if(ok){ p.s=Math.min(2,p.s+1); } else { p.s=0; p.w++; }
-  S.p[q.id]=p; S.cur.chosen=oi; save(); render();
+  var q = curQ(), ok = oi === "ABCD".indexOf(q.answer);
+  recordAnswer(q, ok); S.cur.chosen=oi; save(); render();
 }
 
 function menu(){
@@ -421,6 +537,7 @@ function menu(){
   var c=counts();
   d.innerHTML='<div><p><b>'+c.known+' of '+c.total+'</b> questions known.</p>'+
     '<button class="btn alt" data-act="close">Keep studying</button>'+
+    '<button class="btn alt" data-act="mock" style="margin-top:10px">Take a practice test (25 questions)</button>'+
     '<button class="btn alt" data-act="voices" style="margin-top:10px">Reading voice: '+esc(voiceLabel())+'</button>'+
     '<button class="btn alt" data-act="delay" style="margin-top:10px">Delay answering: '+(delayOn()?'ON':'OFF')+'</button>'+
     '<button class="btn alt" data-act="reload" style="margin-top:10px">Reload app (keeps progress)</button>'+
@@ -430,6 +547,7 @@ function menu(){
     var t=e.target.closest("[data-act]");
     if(e.target===d || (t&&t.dataset.act==="close")){ if(synth) synth.cancel(); d.remove(); render(); return; }
     if(t&&t.dataset.act==="voices"){ voiceSheet(d.firstChild); return; }
+    if(t&&t.dataset.act==="mock"){ d.remove(); startMock(); return; }
     if(t&&t.dataset.act==="dlsara"){
       unlockAudio(); var box=d.firstChild;
       downloadSara(function(done,total){ var el=document.getElementById("saraProg"); if(el) el.innerHTML='Sara · natural voice<br><i>Downloading… '+Math.floor(100*done/total)+'% ('+done+' of '+total+' clips). Keep the app open.</i>'; })
@@ -478,12 +596,16 @@ function sampleSara(){
 
 app.addEventListener("click",function(e){
   var o=e.target.closest("[data-opt]"); if(o){ stopTTS(); answer(+o.dataset.opt); return; }
+  var mo=e.target.closest("[data-mopt]"); if(mo){ stopTTS(); mockAnswer(+mo.dataset.mopt); return; }
   var t=e.target.closest("[data-act]"); if(!t) return;
   var a=t.dataset.act;
   if(a==="readq"||a==="reade"){ if(TTS.on){ stopTTS(); return; } unlockAudio(); if(a==="readq") readQuestion(t); else readExplanation(t); }
   else if(a==="next"){ S.last=S.cur&&S.cur.id; S.cur=null; pick(); render(); }
   else if(a==="again"){ var r=(S.round||1)+1; S=fresh(); S.round=r; save(); render(); }
   else if(a==="menu"){ menu(); }
+  else if(a==="mock"){ startMock(); }
+  else if(a==="quitmock"){ if(t.dataset.sure){ S.mock=null; save(); render(); } else { t.dataset.sure="1"; t.textContent="Tap again to quit"; t.style.color="#c62828"; } }
+  else if(a==="endmock"){ S.mock=null; save(); render(); }
 });
 document.addEventListener("visibilitychange",function(){ if(document.visibilityState==="hidden") stopTTS(); });
 
@@ -491,6 +613,7 @@ function start(data){
   Q = data.questions;
   try{ localStorage.setItem(KEY+".q", JSON.stringify(data)); }catch(e){}
   S = load() || fresh();
+  if(!S.ft){ S.ft={n:0,c:0}; for(var k in S.p){ var pp=S.p[k]; if(pp.a>0){ S.ft.n++; if(!pp.w) S.ft.c++; } } save(); }
   render();
   loadSaraManifest().then(refreshSara);
 }
